@@ -18,10 +18,17 @@
  */
 package org.apache.thrift.protocol;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
+import org.apache.thrift.TConfiguration;
+import org.apache.thrift.TException;
 import org.apache.thrift.TSerializer;
+import org.apache.thrift.transport.TMemoryInputTransport;
 import org.junit.jupiter.api.Test;
 import thrift.test.GuessProtocolStruct;
 
@@ -89,5 +96,82 @@ public class TestTProtocolUtil {
     TProtocolFactory factory =
         TProtocolUtil.guessProtocolFactory(buf, new TSimpleJSONProtocol.Factory());
     assertTrue(factory instanceof TSimpleJSONProtocol.Factory);
+  }
+
+  private static byte[] craftNestedStructs(int depth) throws Exception {
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    for (int i = 0; i < depth; i++) {
+      baos.write(TType.STRUCT); // field type
+      baos.write(0x00); // field ID high byte
+      baos.write(0x01); // field ID low byte (id=1)
+    }
+    for (int i = 0; i <= depth; i++) {
+      baos.write(TType.STOP); // STOP for each level + innermost
+    }
+    return baos.toByteArray();
+  }
+
+  @Test
+  public void testSkipDefaultDepthRejectsDeeplyNestedStruct() throws Exception {
+    byte[] payload = craftNestedStructs(64);
+    TMemoryInputTransport trans = new TMemoryInputTransport(payload);
+    TBinaryProtocol proto = new TBinaryProtocol(trans);
+    assertThrows(TException.class, () -> TProtocolUtil.skip(proto, TType.STRUCT));
+  }
+
+  @Test
+  public void testSkipDefaultDepthAcceptsStructWithinLimit() throws Exception {
+    byte[] payload = craftNestedStructs(63);
+    TMemoryInputTransport trans = new TMemoryInputTransport(payload);
+    TBinaryProtocol proto = new TBinaryProtocol(trans);
+    TProtocolUtil.skip(proto, TType.STRUCT); // must not throw
+  }
+
+  /** Tests that TProtocol.skip() throws DEPTH_LIMIT when nesting exceeds recursionLimit. */
+  @Test
+  public void testTProtocolSkipExceedsRecursionLimit() throws Exception {
+    final int limit = 5;
+    TConfiguration config = TConfiguration.custom().setRecursionLimit(limit).build();
+    TProtocol proto =
+        new TBinaryProtocol(new TMemoryInputTransport(config, craftNestedStructs(limit)));
+    TProtocolException exception =
+        assertThrows(TProtocolException.class, () -> proto.skip(TType.STRUCT));
+    assertEquals(TProtocolException.DEPTH_LIMIT, exception.getType());
+  }
+
+  /** Tests that TProtocolUtil.skip() throws DEPTH_LIMIT when nesting exceeds recursionLimit. */
+  @Test
+  public void testTProtocolUtilSkipExceedsRecursionLimit() throws Exception {
+    final int limit = 5;
+    TConfiguration config = TConfiguration.custom().setRecursionLimit(limit).build();
+    TProtocol proto =
+        new TBinaryProtocol(new TMemoryInputTransport(config, craftNestedStructs(limit)));
+    TProtocolException exception =
+        assertThrows(TProtocolException.class, () -> TProtocolUtil.skip(proto, TType.STRUCT));
+    assertEquals(TProtocolException.DEPTH_LIMIT, exception.getType());
+  }
+
+  /** Tests that skip() succeeds when nesting is within recursionLimit. */
+  @Test
+  public void testSkipWithinRecursionLimit() throws Exception {
+    final int limit = 5;
+    TConfiguration config = TConfiguration.custom().setRecursionLimit(limit).build();
+    byte[] payload = craftNestedStructs(limit - 1);
+    TProtocol proto1 = new TBinaryProtocol(new TMemoryInputTransport(config, payload));
+    assertDoesNotThrow(() -> proto1.skip(TType.STRUCT));
+    TProtocol proto2 = new TBinaryProtocol(new TMemoryInputTransport(config, payload));
+    assertDoesNotThrow(() -> TProtocolUtil.skip(proto2, TType.STRUCT));
+  }
+
+  /** Tests that an explicit setMaxSkipDepth() still overrides the transport recursionLimit. */
+  @Test
+  public void testExplicitMaxSkipDepthStillHonored() throws Exception {
+    try {
+      TProtocolUtil.setMaxSkipDepth(3);
+      TProtocol proto = new TBinaryProtocol(new TMemoryInputTransport(craftNestedStructs(3)));
+      assertThrows(TProtocolException.class, () -> TProtocolUtil.skip(proto, TType.STRUCT));
+    } finally {
+      TProtocolUtil.setMaxSkipDepth(-1);
+    }
   }
 }

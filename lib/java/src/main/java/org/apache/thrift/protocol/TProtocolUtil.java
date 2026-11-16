@@ -27,8 +27,12 @@ public class TProtocolUtil {
   // no instantiation
   private TProtocolUtil() {}
 
-  /** The maximum recursive depth the skip() function will traverse before throwing a TException. */
-  private static int maxSkipDepth = Integer.MAX_VALUE;
+  /**
+   * The maximum recursive depth the skip() function will traverse before throwing a TException.
+   * When not set explicitly via setMaxSkipDepth(), the recursion limit of the protocol's transport
+   * configuration (TConfiguration#getRecursionLimit(), default 64) is used.
+   */
+  private static volatile int maxSkipDepth = -1;
 
   /**
    * Specifies the maximum recursive depth that the skip function will traverse before throwing a
@@ -37,7 +41,8 @@ public class TProtocolUtil {
    * @param depth the maximum recursive depth. A value of 2 would allow the skip function to skip a
    *     structure or collection with basic children, but it would not permit skipping a struct that
    *     had a field containing a child struct. A value of 1 would only allow skipping of simple
-   *     types and empty structs/collections.
+   *     types and empty structs/collections. A negative value restores the default, which is the
+   *     recursion limit of the protocol's transport configuration.
    */
   public static void setMaxSkipDepth(int depth) {
     maxSkipDepth = depth;
@@ -50,7 +55,8 @@ public class TProtocolUtil {
    * @param type the next value will be interpreted as this TType value.
    */
   public static void skip(TProtocol prot, byte type) throws TException {
-    skip(prot, type, maxSkipDepth);
+    int depth = maxSkipDepth;
+    skip(prot, type, depth >= 0 ? depth : prot.getDefaultSkipDepth());
   }
 
   /**
@@ -63,7 +69,7 @@ public class TProtocolUtil {
    */
   public static void skip(TProtocol prot, byte type, int maxDepth) throws TException {
     if (maxDepth <= 0) {
-      throw new TException("Maximum skip depth exceeded");
+      throw new TProtocolException(TProtocolException.DEPTH_LIMIT, "Maximum skip depth exceeded");
     }
     switch (type) {
       case TType.BOOL:

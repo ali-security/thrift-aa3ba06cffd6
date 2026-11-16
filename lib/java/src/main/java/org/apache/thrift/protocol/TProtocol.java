@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.IntFunction;
 import org.apache.thrift.TBaseHelper;
+import org.apache.thrift.TConfiguration;
 import org.apache.thrift.TException;
 import org.apache.thrift.partial.TFieldData;
 import org.apache.thrift.scheme.IScheme;
@@ -379,12 +380,22 @@ public abstract class TProtocol implements TWriteProtocol, TReadProtocol {
   }
 
   public void skip(byte fieldType) throws TException {
-    this.skip(fieldType, Integer.MAX_VALUE);
+    this.skip(fieldType, getDefaultSkipDepth());
+  }
+
+  /**
+   * Returns the recursion limit configured on this protocol's transport, falling back to {@link
+   * TConfiguration#DEFAULT_RECURSION_DEPTH} when no configuration is available.
+   */
+  int getDefaultSkipDepth() {
+    TTransport transport = this.getTransport();
+    TConfiguration config = transport == null ? null : transport.getConfiguration();
+    return config == null ? TConfiguration.DEFAULT_RECURSION_DEPTH : config.getRecursionLimit();
   }
 
   public void skip(byte fieldType, int maxDepth) throws TException {
     if (maxDepth <= 0) {
-      throw new TException("Maximum skip depth exceeded");
+      throw new TProtocolException(TProtocolException.DEPTH_LIMIT, "Maximum skip depth exceeded");
     }
 
     switch (fieldType) {
