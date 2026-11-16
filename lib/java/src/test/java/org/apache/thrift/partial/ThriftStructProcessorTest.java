@@ -67,16 +67,42 @@ public class ThriftStructProcessorTest {
     ThriftStructProcessor processor = new ThriftStructProcessor();
     Object instance = processor.createNewList(numItems);
     assertNotNull(instance);
-    assertTrue(instance instanceof Object[]);
+    assertTrue(instance instanceof List<?>);
 
-    Object[] items = (Object[]) instance;
+    List<?> items = (List<?>) instance;
     for (int i = 0; i < numItems; i++) {
-      assertNull(items[i]);
+      assertEquals(i, items.size());
       processor.setListElement(instance, i, Integer.valueOf(i));
-      assertEquals(i, items[i]);
+      assertEquals(i, items.get(i));
     }
 
     assertTrue(processor.prepareList(instance) instanceof List<?>);
+    assertEquals(numItems, ((List<?>) processor.prepareList(instance)).size());
+  }
+
+  @Test
+  public void testContainersDoNotPreallocateDeclaredSize() throws TException {
+    // The expected size comes from a container header on the wire; a peer can declare a count it
+    // never backs with data. Creating the container must not reserve capacity for that count.
+    ThriftStructProcessor processor = new ThriftStructProcessor();
+
+    Object list = processor.createNewList(Integer.MAX_VALUE);
+    processor.setListElement(list, 0, Integer.valueOf(0));
+    processor.setListElement(list, 1, Integer.valueOf(1));
+    assertEquals(Arrays.asList(0, 1), processor.prepareList(list));
+
+    Object map = processor.createNewMap(Integer.MAX_VALUE);
+    processor.setMapElement(map, 0, Integer.valueOf(0), Integer.valueOf(0));
+    assertEquals(1, ((Map<?, ?>) processor.prepareMap(map)).size());
+
+    Object set = processor.createNewSet(Integer.MAX_VALUE);
+    processor.setSetElement(set, 0, Integer.valueOf(0));
+    assertEquals(1, ((Set<?>) processor.prepareSet(set)).size());
+
+    // A negative count reserves nothing rather than failing.
+    assertTrue(((List<?>) processor.prepareList(processor.createNewList(-1))).isEmpty());
+    assertTrue(((Map<?, ?>) processor.prepareMap(processor.createNewMap(-1))).isEmpty());
+    assertTrue(((Set<?>) processor.prepareSet(processor.createNewSet(-1))).isEmpty());
   }
 
   @Test

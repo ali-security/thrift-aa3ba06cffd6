@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.IntFunction;
+import org.apache.thrift.TBaseHelper;
 import org.apache.thrift.TException;
 import org.apache.thrift.partial.TFieldData;
 import org.apache.thrift.scheme.IScheme;
@@ -223,7 +224,7 @@ public abstract class TProtocol implements TWriteProtocol, TReadProtocol {
    * @throws TException when any sub-operation fails
    */
   public final <K, V> Map<K, V> readMap(ReadMapEntryCallback<K, V> callback) throws TException {
-    return readMap(callback, HashMap::new);
+    return readMap(callback, size -> new HashMap<>(TBaseHelper.preallocSize(size)));
   }
 
   /**
@@ -278,7 +279,7 @@ public abstract class TProtocol implements TWriteProtocol, TReadProtocol {
    * @throws TException when any sub-operation fails
    */
   public final <T> List<T> readList(ReadCollectionCallback<T> callback) throws TException {
-    return readList(callback, ArrayList::new);
+    return readList(callback, size -> new ArrayList<>(TBaseHelper.preallocSize(size)));
   }
 
   /**
@@ -330,7 +331,7 @@ public abstract class TProtocol implements TWriteProtocol, TReadProtocol {
    * @throws TException when any sub-operation fails
    */
   public final <T> Set<T> readSet(ReadCollectionCallback<T> callback) throws TException {
-    return readSet(callback, HashSet::new);
+    return readSet(callback, size -> new HashSet<>(TBaseHelper.preallocSize(size)));
   }
 
   /**

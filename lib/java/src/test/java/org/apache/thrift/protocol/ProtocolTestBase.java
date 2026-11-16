@@ -41,6 +41,7 @@ import org.apache.thrift.transport.TMemoryBuffer;
 import org.apache.thrift.transport.TTransportException;
 import org.junit.jupiter.api.Test;
 import thrift.test.CompactProtoTestStruct;
+import thrift.test.Empty;
 import thrift.test.HolyMoley;
 import thrift.test.Nesting;
 import thrift.test.OneOfEach;
@@ -428,9 +429,167 @@ public abstract class ProtocolTestBase {
     assertEquals(Fixtures.getCompactProtoTestStruct(), cpts);
   }
 
+  /**
+   * A container header is read before any of its elements, so a peer can declare an element count
+   * that it never backs with data. Reading such a header must not reserve capacity for the declared
+   * count up front: the read has to fail once the data actually sent runs out, not on an outsized
+   * (or invalid) initial allocation. The tuple protocol carries no field headers, so
+   * TestTTupleProtocol overrides this test.
+   */
+  @Test
+  public void testDeclaredContainerSizeIsNotPreallocated() throws Exception {
+    // A large configured message size keeps checkReadBytesAvailable from rejecting the declared
+    // count first, so the read reaches the container allocation itself.
+    TConfiguration unlimited = TConfiguration.custom().setMaxMessageSize(Integer.MAX_VALUE).build();
+
+    // list<i8> byte_list: preallocating 1e9 elements needs a multi-gigabyte backing array.
+    internalTestDeclaredContainerSize(
+        unlimited,
+        (short) 11,
+        TType.LIST,
+        proto -> {
+          proto.writeListBegin(new TList(TType.BYTE, 1_000_000_000));
+          proto.writeByte((byte) 1);
+          proto.writeByte((byte) 2);
+        });
+
+    // set<i8> byte_set: doubling a 1.5e9 count for the hash capacity overflows int.
+    internalTestDeclaredContainerSize(
+        unlimited,
+        (short) 20,
+        TType.SET,
+        proto -> {
+          proto.writeSetBegin(new TSet(TType.BYTE, 1_500_000_000));
+          proto.writeByte((byte) 1);
+          proto.writeByte((byte) 2);
+        });
+
+    // map<i8,i8> byte_byte_map: a 1e9 count sizes a 2^30-bucket table for the first entry.
+    internalTestDeclaredContainerSize(
+        unlimited,
+        (short) 29,
+        TType.MAP,
+        proto -> {
+          proto.writeMapBegin(new TMap(TType.BYTE, TType.BYTE, 1_000_000_000));
+          proto.writeByte((byte) 1);
+          proto.writeByte((byte) 1);
+          proto.writeByte((byte) 2);
+          proto.writeByte((byte) 2);
+        });
+
+    // An empty struct has no minimum serialized size in some protocols, so even with the default
+    // configuration a container of structs may declare any count at all.
+    if (getFactory().getProtocol(new TMemoryBuffer(0)).getMinSerializedSize(TType.STRUCT) == 0) {
+      TConfiguration defaults = new TConfiguration();
+
+      // list<Empty> struct_list
+      internalTestDeclaredContainerSize(
+          defaults,
+          (short) 19,
+          TType.LIST,
+          proto -> {
+            proto.writeListBegin(new TList(TType.STRUCT, Integer.MAX_VALUE));
+            new Empty().write(proto);
+            new Empty().write(proto);
+          });
+
+      // set<Empty> struct_set
+      internalTestDeclaredContainerSize(
+          defaults,
+          (short) 28,
+          TType.SET,
+          proto -> {
+            proto.writeSetBegin(new TSet(TType.STRUCT, Integer.MAX_VALUE));
+            new Empty().write(proto);
+            new Empty().write(proto);
+          });
+    }
+  }
+
+  /**
+   * The {@link TProtocol} collection read helpers size their default containers from the declared
+   * element count too; they must not reserve capacity for a count that is never backed by data.
+   */
+  @Test
+  public void testReadCollectionHelpersDoNotPreallocateDeclaredSize() throws Exception {
+    if (!canBeUsedNaked()) {
+      return;
+    }
+    TConfiguration unlimited = TConfiguration.custom().setMaxMessageSize(Integer.MAX_VALUE).build();
+
+    TMemoryBuffer listBuf = new TMemoryBuffer(unlimited, 0);
+    TProtocol listOut = getFactory().getProtocol(listBuf);
+    listOut.writeListBegin(new TList(TType.BYTE, 1_000_000_000));
+    listOut.writeByte((byte) 1);
+    listOut.writeByte((byte) 2);
+    TProtocol listIn = getFactory().getProtocol(listBuf);
+    assertThrows(TTransportException.class, () -> listIn.readList(listIn::readByte));
+
+    TMemoryBuffer setBuf = new TMemoryBuffer(unlimited, 0);
+    TProtocol setOut = getFactory().getProtocol(setBuf);
+    setOut.writeSetBegin(new TSet(TType.BYTE, 1_000_000_000));
+    setOut.writeByte((byte) 1);
+    setOut.writeByte((byte) 2);
+    TProtocol setIn = getFactory().getProtocol(setBuf);
+    assertThrows(TTransportException.class, () -> setIn.readSet(setIn::readByte));
+
+    TMemoryBuffer mapBuf = new TMemoryBuffer(unlimited, 0);
+    TProtocol mapOut = getFactory().getProtocol(mapBuf);
+    mapOut.writeMapBegin(new TMap(TType.BYTE, TType.BYTE, 1_000_000_000));
+    mapOut.writeByte((byte) 1);
+    mapOut.writeByte((byte) 1);
+    mapOut.writeByte((byte) 2);
+    mapOut.writeByte((byte) 2);
+    TProtocol mapIn = getFactory().getProtocol(mapBuf);
+    assertThrows(
+        TTransportException.class,
+        () ->
+            mapIn.readMap(
+                new TProtocol.ReadMapEntryCallback<Byte, Byte>() {
+                  @Override
+                  public Byte getKey() throws TException {
+                    return mapIn.readByte();
+                  }
+
+                  @Override
+                  public Byte getValue() throws TException {
+                    return mapIn.readByte();
+                  }
+                }));
+  }
+
   //
   // Helper methods
   //
+
+  private interface ContainerWriter {
+    void write(TProtocol proto) throws TException;
+  }
+
+  /**
+   * Writes the start of a CompactProtoTestStruct holding a single container field whose header
+   * declares more elements than follow it, then reads it back.
+   */
+  private void internalTestDeclaredContainerSize(
+      TConfiguration config, short fieldId, byte fieldType, ContainerWriter writer)
+      throws Exception {
+    TMemoryBuffer buf = new TMemoryBuffer(config, 0);
+    TProtocol out = getFactory().getProtocol(buf);
+
+    out.writeStructBegin(new TStruct("CompactProtoTestStruct"));
+    out.writeFieldBegin(new TField("container", fieldType, fieldId));
+    writer.write(out);
+    // The data ends here, short of the element count the header declared.
+
+    // Read through a fresh protocol: the writer above is left mid-struct, and a stateful protocol
+    // (e.g. JSON) would otherwise read in the writer's nesting context.
+    TProtocol in = getFactory().getProtocol(buf);
+    // The elements that were sent are read; the read then runs out of data.
+    assertThrows(
+        TTransportException.class,
+        () -> new CompactProtoTestStruct().read(in),
+        "Reading a container shorter than its declared size should fail");
+  }
 
   private void internalTestStructField(StructFieldTestCase testCase) throws Exception {
     TMemoryBuffer buf = new TMemoryBuffer(0);
