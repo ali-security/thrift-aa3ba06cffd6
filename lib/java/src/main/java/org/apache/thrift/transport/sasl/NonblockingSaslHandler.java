@@ -416,15 +416,19 @@ public class NonblockingSaslHandler {
     if (saslPeer != null) {
       saslPeer.dispose();
     }
-    if (serverContextCreated) {
-      eventHandler.deleteContext(
-          serverContext,
-          inputProtocolFactory.getProtocol(underlyingTransport),
-          outputProtocolFactory.getProtocol(underlyingTransport));
+    try {
+      if (serverContextCreated) {
+        eventHandler.deleteContext(
+            serverContext,
+            inputProtocolFactory.getProtocol(underlyingTransport),
+            outputProtocolFactory.getProtocol(underlyingTransport));
+      }
+    } finally {
+      // The connection is released even if the event handler fails, never close it twice.
+      nextPhase = Phase.CLOSED;
+      currentPhase = Phase.CLOSED;
+      LOGGER.trace("Connection closed: {}", underlyingTransport);
     }
-    nextPhase = Phase.CLOSED;
-    currentPhase = Phase.CLOSED;
-    LOGGER.trace("Connection closed: {}", underlyingTransport);
   }
 
   public enum Phase {
