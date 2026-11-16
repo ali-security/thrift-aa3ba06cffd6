@@ -310,6 +310,8 @@ public class NonblockingSaslHandler {
       }
     } catch (TSaslNegotiationException e) {
       failSaslNegotiation(e);
+    } catch (Exception e) {
+      fail(e);
     }
   }
 
