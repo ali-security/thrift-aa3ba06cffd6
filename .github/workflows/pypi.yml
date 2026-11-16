@@ -20,8 +20,7 @@
 name: "PyPI publishing"
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch: {}
 
 jobs:
   pypi-publish:

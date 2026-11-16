@@ -66,6 +66,9 @@ test {
     }
 
     include '**/Test*.class'
+    // Sealed build: ThriftStructProcessorTest covers partial/ThriftStructProcessor
+    // but its *Test suffix misses the Test* pattern above, so it never ran.
+    include '**/partial/ThriftStructProcessorTest.class'
     exclude '**/Test*\$*.class'
 
     // https://junit.org/junit5/docs/current/user-guide/#running-tests-build-gradle

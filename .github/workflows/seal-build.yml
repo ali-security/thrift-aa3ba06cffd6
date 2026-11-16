@@ -1,0 +1,156 @@
+name: "Seal build (libthrift)"
+
+# Sealed build (agentic-sealer): replays upstream build.yml's `compiler` job and
+# the Java half of its `lib-java-kotlin` job verbatim (build.yml itself cannot be
+# harvested by the sealer, see the comment there). Dropped: the spotlessCheck /
+# ktfmtCheck format gates, the Kotlin library steps (lib/kotlin is not part of
+# libthrift.jar) and the precross uploads that only feed the cross-test job.
+# Added: a Gradle init script that prints per-test results and totals, and a
+# test-filter dispatch input that scopes the lib/java test run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Gradle test selector for lib/java, e.g. --tests org.apache.thrift.protocol.TestTCompactProtocol (empty = full suite)"
+        required: false
+        default: ""
+
+env:
+  BUILD_DEPS: automake bison flex git libboost-all-dev libevent-dev libssl-dev libtool make pkg-config
+  CONFIG_ARGS_FOR_LIBS: >
+    --disable-debug
+    --disable-dependency-tracking
+    --without-cpp
+    --without-c_glib
+    --without-java
+    --without-kotlin
+    --without-python
+    --without-py3
+    --without-ruby
+    --without-haxe
+    --without-netstd
+    --without-perl
+    --without-php
+    --without-php_extension
+    --without-dart
+    --without-erlang
+    --without-go
+    --without-d
+    --without-nodejs
+    --without-nodets
+    --without-lua
+    --without-rs
+    --without-swift
+
+permissions:
+  contents: read
+
+jobs:
+  compiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -yq
+          sudo apt-get install -y --no-install-recommends g++ $BUILD_DEPS
+
+      - name: Run bootstrap
+        run: ./bootstrap.sh
+
+      - name: Run configure
+        run: ./configure --disable-debug --disable-tests --disable-libs
+
+      - name: Run make
+        run: make -j$(nproc)
+
+      - name: Run install
+        run: make install
+
+      - name: Run thrift version
+        run: /usr/local/bin/thrift -version
+
+      - name: Archive built thrift compiler
+        uses: actions/upload-artifact@v4
+        with:
+          name: thrift-compiler
+          path: compiler/cpp/thrift
+          retention-days: 3
+
+  lib-java:
+    needs: compiler
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GRADLE_VERSION: "8.4"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: "gradle"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -yq
+          sudo apt-get install -y --no-install-recommends $BUILD_DEPS
+          sudo apt-get install -y wget unzip ant maven
+
+      - name: Setup gradle
+        run: |
+          wget https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip -q -O /tmp/gradle-$GRADLE_VERSION-bin.zip
+          (echo "3e1af3ae886920c3ac87f7a91f816c0c7c436f276a6eefdb3da152100fef72ae  /tmp/gradle-$GRADLE_VERSION-bin.zip" | sha256sum -c -)
+          unzip -d /tmp /tmp/gradle-$GRADLE_VERSION-bin.zip
+          sudo mv /tmp/gradle-$GRADLE_VERSION /usr/local/gradle
+          sudo ln -s /usr/local/gradle/bin/gradle /usr/local/bin
+          gradle --version
+
+      - name: Enable Gradle test result logging
+        run: |
+          mkdir -p ~/.gradle/init.d
+          cp .seal/test-logging.init.gradle ~/.gradle/init.d/
+
+      - name: Run bootstrap
+        run: ./bootstrap.sh
+
+      - name: Run configure
+        run: |
+          ./configure $(echo $CONFIG_ARGS_FOR_LIBS | sed 's/without-java/with-java/')
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: thrift-compiler
+          path: compiler/cpp
+
+      - name: Run thrift-compiler
+        run: |
+          chmod a+x compiler/cpp/thrift
+          compiler/cpp/thrift -version
+
+      - name: Run make for java
+        run: make -C lib/java
+
+      # this will invoke publishToMavenLocal and install locally
+      - name: Run make install for java
+        run: make -C lib/java install
+
+      - name: Upload java libthrift artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libthrift
+          if-no-files-found: error
+          path: ~/.m2/repository/org/apache/thrift
+
+      - name: Run make check for java
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            cd lib/java
+            gradle test -Prelease=true -Pthrift.version=0.22.0 -Pthrift.compiler=$GITHUB_WORKSPACE/compiler/cpp/thrift --console=plain ${{ inputs.test-filter }}
+          else
+            make -C lib/java check
+          fi
